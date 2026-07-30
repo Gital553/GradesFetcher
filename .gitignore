@@ -1,2 +1,9 @@
 .idea/*
 *.db
+
+# Narrated cut built with the espeak stand-in voice: a disposable ~42 MB
+# artifact used to verify timing, ducking and muxing. The master
+# (science_trailer_grade4.mp4) is tracked. Once narration is rendered with a
+# real TTS voice, track that one explicitly:
+#   git add -f science_trailer_grade4_vo.mp4
+science_trailer_grade4_vo.mp4
