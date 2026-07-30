@@ -186,7 +186,8 @@ def say_cloud(text, out_path, voice="he-IL-Chirp3-HD-Achernar", model=None,
     return write_wav(out_path, base64.b64decode(data["audioContent"]), 24000)
 
 
-def say_espeak(text, out_path, voice="he", model=None, style=None, rate=145):
+def say_espeak(text, out_path, voice="mb-hb2", model=None, style=None,
+               rate=140):
     """Offline stand-in: robotic, but real speech with real durations."""
     subprocess.run(["espeak-ng", "-v", voice, "-s", str(int(rate)), "-w", out_path,
                     text], check=True, capture_output=True)
@@ -194,8 +195,10 @@ def say_espeak(text, out_path, voice="he", model=None, style=None, rate=145):
 
 
 ENGINES = {"gemini": say_gemini, "cloud": say_cloud, "espeak": say_espeak}
+# mb-hb2 is the MBROLA Hebrew female diphone voice (apt: mbrola-hb2);
+# far more natural than espeak's built-in "he" formant synthesis.
 DEFAULT_VOICE = {"gemini": "Kore", "cloud": "he-IL-Chirp3-HD-Achernar",
-                 "espeak": "he"}
+                 "espeak": "mb-hb2"}
 
 
 def list_voices(engine):
@@ -234,8 +237,10 @@ def synthesize(engine, voice=None, model=None, force=False):
             f"{engine}|{voice}|{model}|{STYLE}|{text}".encode()).hexdigest()[:12]
         path = os.path.join(VO_DIR, f"{i:02d}_{tag}.wav")
         if force or not os.path.exists(path):
-            fn(text, path, voice=voice, model=model, style=STYLE) \
-                if engine != "espeak" else fn(text, path)
+            if engine == "espeak":
+                fn(text, path, voice=voice)
+            else:
+                fn(text, path, voice=voice, model=model, style=STYLE)
             print(f"  synth {i:02d}  {text[:44]}")
         lines.append({"index": i, "shot": shot, "at": at, "text": text,
                       "wav": path, "seconds": duration(path),
@@ -280,7 +285,7 @@ def write_srt(lines, path=None):
 
 
 # --------------------------------------------------------------- mixing ---
-def duck(music, spans, depth_db=-9.0, ramp=0.35):
+def duck(music, spans, depth_db=-12.0, ramp=0.35):
     """Pull the score down under speech, with short ramps so it breathes."""
     gain = np.ones_like(music)
     g = 10 ** (depth_db / 20)
@@ -306,9 +311,18 @@ def mix(lines, music_path=None, out_path=None, vo_gain=1.0):
     for ln in lines:
         sig, r = read_wav(ln["wav"])
         sig = resample(sig, r)
-        peak = np.abs(sig).max()
-        if peak > 0:
-            sig = sig / peak * 0.85 * vo_gain      # even level line to line
+        # normalise by RMS, not peak: speech has a high crest factor, so
+        # peak-matching leaves the voice sitting under the music even though
+        # the meters look right.
+        rms = float(np.sqrt((sig ** 2).mean()))
+        if rms > 0:
+            sig = sig * (0.14 * vo_gain / rms)
+        # soft-limit the peaks instead of rescaling the line: rescaling to fit
+        # the loudest consonant simply undoes the normalisation and puts the
+        # voice back under the music.
+        sig = np.tanh(sig / 0.9).astype(np.float32) * 0.9
+        sig = sig + 0.16 * np.concatenate(
+            [np.zeros(int(0.055 * SR), np.float32), sig])[:len(sig)]
         a = int(ln["abs"] * SR)
         b = min(len(vo), a + len(sig))
         vo[a:b] += sig[:b - a]
