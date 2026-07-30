@@ -307,6 +307,25 @@ def duck(music, vo_spans, sr, depth_db=-9.0, ramp=0.35):
     return music * gain
 ```
 
+**Ducking by level alone is not enough**, and this is the mistake that produces
+"I can't hear the narration" even when the meters look right. Music and speech
+share the 300 Hz–3.5 kHz band where intelligibility lives, so also carve the
+music in that band while someone is talking — lows and highs stay, so the score
+still reads as music rather than just going quiet. Two details:
+
+- **Carve the ducked signal, not the original.** Subtracting a band of the
+  full-level music from an already-quiet signal *adds* energy back. Getting this
+  backwards cost 9 dB of intelligibility and was invisible on a level meter.
+- **Shape the voice too**: high-pass below ~90 Hz, lift 1.6–4.5 kHz, and
+  compress. Synthetic speech has a wide dynamic range and the quiet syllables are
+  exactly the ones that disappear.
+
+Measure the thing you actually care about: **voice versus music, band-limited to
+300–3.5 kHz, during speech only**. Comparing whole-mix RMS in speech windows
+against music-only windows tells you nothing — those should be similar, because
+consistent program level is the goal. Target ~12–15 dB of voice advantage in the
+speech band.
+
 Then assemble: narration laid onto a silent bed at `vo_at`, mixed with the ducked
 music, and muxed onto the picture.
 

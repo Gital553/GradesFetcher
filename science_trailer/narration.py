@@ -284,9 +284,58 @@ def write_srt(lines, path=None):
     return path
 
 
+# ------------------------------------------------------- speech clarity ---
+def _band(sig, lo, hi, sr=SR):
+    """Band-limited copy via FFT, with soft edges to avoid ringing."""
+    spec = np.fft.rfft(sig)
+    freq = np.fft.rfftfreq(len(sig), 1 / sr)
+    mask = np.zeros_like(freq)
+    edge = max(lo * 0.25, 60.0)
+    mask[(freq >= lo) & (freq <= hi)] = 1.0
+    rise = (freq > lo - edge) & (freq < lo)
+    mask[rise] = 0.5 - 0.5 * np.cos(np.pi * (freq[rise] - (lo - edge)) / edge)
+    fall = (freq > hi) & (freq < hi + edge)
+    mask[fall] = 0.5 + 0.5 * np.cos(np.pi * (freq[fall] - hi) / edge)
+    return np.fft.irfft(spec * mask, n=len(sig)).astype(np.float32)
+
+
+def _smooth(x, n):
+    """Boxcar smoothing in O(n) — the compressor's envelope detector."""
+    n = max(1, int(n))
+    pad = np.concatenate([np.full(n, x[0], np.float32), x,
+                          np.full(n, x[-1], np.float32)])
+    c = np.cumsum(np.concatenate([[0.0], pad.astype(np.float64)]))
+    out = ((c[n:] - c[:-n]) / n).astype(np.float32)
+    return out[n:n + len(x)]
+
+
+def compress(sig, threshold=0.06, ratio=4.0, attack=0.004, release=0.10, sr=SR):
+    """Level out the syllables. Synthetic speech has a wide dynamic range and
+    the quiet syllables are exactly the ones that vanish under music."""
+    env = _smooth(np.abs(sig), attack * sr) + 1e-9
+    gain = np.where(env > threshold, (threshold / env) ** (1 - 1 / ratio), 1.0)
+    return sig * _smooth(gain.astype(np.float32), release * sr)
+
+
+def voice_shape(sig, sr=SR):
+    """Make the voice legible: drop rumble, lift the consonant band."""
+    sig = sig - _band(sig, 0.0, 90.0, sr)                    # high-pass
+    sig = sig + _band(sig, 1600.0, 4500.0, sr) * 0.9         # presence lift
+    return compress(sig, sr=sr)
+
+
 # --------------------------------------------------------------- mixing ---
-def duck(music, spans, depth_db=-12.0, ramp=0.35):
-    """Pull the score down under speech, with short ramps so it breathes."""
+def duck(music, spans, depth_db=-8.0, ramp=0.30, scoop=0.40):
+    """Get the score out of the way of the voice.
+
+    Level alone is not enough: music and speech share the 300 Hz-3.5 kHz band
+    where intelligibility lives, so the music is *also* carved in that band
+    while someone is talking. Lows and highs stay, so the score still reads as
+    music instead of just going quiet.
+
+    These defaults put the voice ~15 dB above the bed inside the speech band —
+    the broadcast range — while barely touching the music's overall level.
+    """
     gain = np.ones_like(music)
     g = 10 ** (depth_db / 20)
     for start, end in spans:
@@ -297,7 +346,11 @@ def duck(music, spans, depth_db=-12.0, ramp=0.35):
         pre[:] = np.linspace(1, g, len(pre))
         post = gain[b:b + r]
         post[:] = np.linspace(g, 1, len(post))
-    return music * gain
+    carve = (1 - gain) / (1 - g) * scoop           # 0 when open, `scoop` when ducked
+    ducked = music * gain
+    # carve the *ducked* signal: subtracting a band of the full-level music
+    # from an already-quiet signal adds energy back instead of removing it.
+    return ducked - _band(ducked, 300.0, 3500.0) * carve
 
 
 def mix(lines, music_path=None, out_path=None, vo_gain=1.0):
@@ -314,9 +367,10 @@ def mix(lines, music_path=None, out_path=None, vo_gain=1.0):
         # normalise by RMS, not peak: speech has a high crest factor, so
         # peak-matching leaves the voice sitting under the music even though
         # the meters look right.
+        sig = voice_shape(sig)
         rms = float(np.sqrt((sig ** 2).mean()))
         if rms > 0:
-            sig = sig * (0.14 * vo_gain / rms)
+            sig = sig * (0.20 * vo_gain / rms)
         # soft-limit the peaks instead of rescaling the line: rescaling to fit
         # the loudest consonant simply undoes the normalisation and puts the
         # voice back under the music.
