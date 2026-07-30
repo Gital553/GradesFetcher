@@ -149,6 +149,43 @@ client = texttospeech.TextToSpeechClient(
     client_options=ClientOptions(api_endpoint=API_ENDPOINT))
 ```
 
+### Which API, and the free path
+
+There are two different Google products here and they take different credentials:
+
+| | Gemini Developer API | Cloud Text-to-Speech |
+|---|---|---|
+| Host | `generativelanguage.googleapis.com` | `texttospeech.googleapis.com` |
+| Auth | API key from AI Studio | API key or service-account ADC on a billing-enabled project |
+| Cost | free tier, rate-limited | free monthly quota, then paid |
+| Style steering | natural language in the prompt | `input.prompt` on TTS models |
+| Returns | **headerless PCM**, base64 | base64 WAV/MP3 per `audioEncoding` |
+
+For a classroom film — a few thousand characters — the free tier is enough. Start
+there; move to Cloud TTS when you need SSML, long-form chunking, or a specific
+`he-IL` voice that only exists there.
+
+**The Gemini response is raw PCM, not a WAV.** `inlineData.mimeType` looks like
+`audio/L16;codec=pcm;rate=24000`; write a RIFF header around the bytes yourself or
+every downstream tool will reject the file. Parse the rate out of the mime type
+rather than assuming 24 kHz.
+
+```python
+part = resp["candidates"][0]["content"]["parts"][0]["inlineData"]
+rate = int(dict(p.split("=") for p in part["mimeType"].split(";")[1:]
+                if "=" in p).get("rate", 24000))
+with wave.open(out, "wb") as w:
+    w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+    w.writeframes(base64.b64decode(part["data"]))
+```
+
+**Prove the chain before you spend anything.** `apt-get install espeak-ng` gives
+real (robotic) Hebrew speech offline: `espeak-ng -v he -s 145 -w out.wav "טקסט"`.
+Run the whole pipeline on it first — durations, fit report, ducking, subtitles,
+mux — so that switching to the real engine is one flag and the only variable left
+is voice quality. Do keep in mind that pacing differs between engines, so leave
+headroom rather than tuning line lengths against the stand-in.
+
 ### Synthesising a Hebrew line
 
 ```python
@@ -230,6 +267,12 @@ def build_timeline(script, voice_dir="build/vo"):
         cursor += duration
     return timeline, srt, cursor
 ```
+
+Then print a **fit report** before mixing anything: for each line, does
+`at + measured_seconds` land inside its shot? Overruns are the only real failure
+mode, and they cluster on the short shots — a 3-second gate card cannot hold a
+3.5-second sentence. Shorten the *spoken* line (the caption can stay long) or
+grow the shot.
 
 Consequences worth planning for:
 
